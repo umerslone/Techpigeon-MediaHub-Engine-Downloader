@@ -2,9 +2,19 @@ const DEFAULT_API_BASE = "http://localhost:8000";
 
 function sanitizeApiBase(value) {
   if (!value || typeof value !== "string") return DEFAULT_API_BASE;
-  const trimmed = value.trim().replace(/\/+$/, "");
-  if (!/^https?:\/\//i.test(trimmed)) return DEFAULT_API_BASE;
-  return trimmed;
+  try {
+    const parsed = new URL(value.trim());
+    const isLocalHttp =
+      parsed.protocol === "http:" &&
+      (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1");
+    const isRemoteHttps = parsed.protocol === "https:";
+
+    if (!isLocalHttp && !isRemoteHttps) return DEFAULT_API_BASE;
+
+    return `${parsed.protocol}//${parsed.host}${parsed.pathname}`.replace(/\/+$/, "");
+  } catch (err) {
+    return DEFAULT_API_BASE;
+  }
 }
 
 function getApiBase() {

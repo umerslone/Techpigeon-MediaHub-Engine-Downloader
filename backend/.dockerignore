@@ -30,5 +30,6 @@ MANIFEST
 .env.local
 .env.*.local
 venv/
+.venv312/
 ENV/
 env/

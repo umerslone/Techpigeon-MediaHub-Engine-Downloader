@@ -10,6 +10,7 @@ Production-ready video analysis API with:
 """
 
 import ipaddress
+import hashlib
 import logging
 import os
 import re
@@ -82,6 +83,7 @@ DEFAULT_ALLOWED_DOMAINS = [
     "youtube.com", "youtu.be", "bilibili.com", "ok.ru",
     "dailymotion.com", "vimeo.com", "tiktok.com",
 ]
+FORMAT_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 CACHE_TTL = int(os.getenv('CACHE_TTL', 3600))  # 1 hour
 MAX_CACHE_SIZE = int(os.getenv('MAX_CACHE_SIZE', 1000))
@@ -111,7 +113,8 @@ ALLOWED_VIDEO_DOMAINS = parse_csv_env(
 
 def get_cache_key(url: str) -> str:
     """Generate consistent cache key from URL"""
-    return f"media:analysis:{hash(url)}"
+    digest = hashlib.sha256(url.encode("utf-8")).hexdigest()
+    return f"media:analysis:{digest}"
 
 
 @lru_cache(maxsize=MAX_CACHE_SIZE)
@@ -179,6 +182,21 @@ def make_safe_filename(name: str) -> str:
     return normalized[:120] or "video"
 
 
+def validate_format_id(format_id: str) -> str:
+    normalized = (format_id or "").strip()
+    if not FORMAT_ID_PATTERN.fullmatch(normalized):
+        raise HTTPException(status_code=400, detail="Invalid format id")
+    return normalized
+
+
+def get_extension_origin_regex() -> str:
+    extension_ids = parse_csv_env("CORS_EXTENSION_IDS", "")
+    if not extension_ids:
+        return r"^chrome-extension://[a-z]{32}$"
+    escaped_ids = "|".join(re.escape(extension_id) for extension_id in extension_ids)
+    return rf"^chrome-extension://(?:{escaped_ids})$"
+
+
 # ============================================================================
 # YT-DLP CONFIGURATION (Optimized for high-volume)
 # ============================================================================
@@ -207,10 +225,15 @@ def get_ytdl_options():
 # FASTAPI APP SETUP
 # ============================================================================
 
+docs_enabled = parse_bool_env("ENABLE_API_DOCS", "true")
+
 app = FastAPI(
     title="TechPigeon MediaHub API",
     version="2.0.0",
-    description="Enterprise HD/4K video parser. 99.99% SLA. 20+ platforms. 10k+ concurrent connections."
+    description="Enterprise HD/4K video parser. 99.99% SLA. 20+ platforms. 10k+ concurrent connections.",
+    docs_url="/docs" if docs_enabled else None,
+    redoc_url="/redoc" if docs_enabled else None,
+    openapi_url="/openapi.json" if docs_enabled else None,
 )
 
 # Middleware stack (order matters!)
@@ -224,13 +247,29 @@ cors_origins = parse_csv_env(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
-    allow_origin_regex=r"^chrome-extension://[a-z]{32}$",
+    allow_origin_regex=get_extension_origin_regex(),
     allow_credentials=parse_bool_env("CORS_ALLOW_CREDENTIALS", "false"),
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 app.state.limiter = limiter
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    response.headers.setdefault("Cache-Control", "no-store")
+
+    forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    if forwarded_proto == "https":
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+
+    return response
 
 
 @app.exception_handler(RateLimitExceeded)
@@ -373,7 +412,6 @@ async def analyze_media(req: AnalyzeRequest, request: Request):
                                 "filesize_approx": f.get('filesize') or f.get('filesize_approx') or 0,
                                 "has_video": vcodec != 'none',
                                 "has_audio": acodec != 'none',
-                                "direct_url": f.get('url', '')
                             })
 
                 formats.sort(key=lambda x: x['height'], reverse=True)
@@ -385,7 +423,6 @@ async def analyze_media(req: AnalyzeRequest, request: Request):
                         "quality": f"{f.get('abr', 128)}kbps",
                         "ext": f.get('ext', 'mp3'),
                         "filesize_approx": f.get('filesize') or f.get('filesize_approx') or 0,
-                        "direct_url": f.get('url', '')
                     }
                     for f in info.get('formats', [])
                     if f.get('vcodec') == 'none' and f.get('acodec') != 'none'
@@ -449,7 +486,8 @@ async def download_stream(
 
     try:
         opts = get_ytdl_options()
-        opts['format'] = format_id
+        selected_format_id = validate_format_id(format_id)
+        opts['format'] = selected_format_id
 
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(target_url, download=False)
@@ -458,7 +496,7 @@ async def download_stream(
             # Find format URL
             format_url = None
             for f in info.get('formats', []):
-                if f.get('format_id') == format_id:
+                if f.get('format_id') == selected_format_id:
                     format_url = f.get('url')
                     break
 
@@ -476,7 +514,7 @@ async def download_stream(
                 response.iter_content(chunk_size=8192),
                 media_type=response.headers.get('content-type', 'application/octet-stream'),
                 headers={
-                    'Content-Disposition': f'attachment; filename="{filename}.{format_id.split(".")[-1]}"'
+                    'Content-Disposition': f'attachment; filename="{filename}.{selected_format_id.split(".")[-1]}"'
                 }
             )
 

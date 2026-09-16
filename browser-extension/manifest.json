@@ -4,6 +4,9 @@
   "version": "1.0",
   "description": "Instant high quality video & audio downloder button on Bilibili, YouTube, OK.ru & all web players.",
   "permissions": ["activeTab", "scripting", "storage", "downloads"],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' https: http://localhost:8000 http://127.0.0.1:8000; base-uri 'self'; frame-ancestors 'none'"
+  },
   "host_permissions": [
     "*://*.youtube.com/*",
     "*://youtu.be/*",

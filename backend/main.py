@@ -1,4 +1,5 @@
 import ipaddress
+import hashlib
 import logging
 import os
 import re
@@ -70,6 +71,7 @@ DEFAULT_ALLOWED_DOMAINS = [
     "vimeo.com",
     "tiktok.com",
 ]
+FORMAT_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 # Enterprise configuration
 CACHE_TTL = int(os.getenv('CACHE_TTL', 3600))  # 1 hour default
@@ -96,7 +98,8 @@ ALLOWED_VIDEO_DOMAINS = parse_csv_env(
 
 def get_cache_key(url: str) -> str:
     """Generate cache key from URL"""
-    return f"media:analysis:{hash(url)}"
+    digest = hashlib.sha256(url.encode("utf-8")).hexdigest()
+    return f"media:analysis:{digest}"
 
 
 @lru_cache(maxsize=MAX_CACHE_SIZE)
@@ -170,10 +173,31 @@ def make_safe_filename(name: str) -> str:
     return normalized[:120] or "video"
 
 
+def validate_format_id(format_id: str) -> str:
+    normalized = (format_id or "").strip()
+    if not FORMAT_ID_PATTERN.fullmatch(normalized):
+        raise HTTPException(status_code=400, detail="Invalid format id")
+    return normalized
+
+
+def get_extension_origin_regex() -> str:
+    extension_ids = parse_csv_env("CORS_EXTENSION_IDS", "")
+    if not extension_ids:
+        return r"^chrome-extension://[a-z]{32}$"
+    escaped_ids = "|".join(re.escape(extension_id) for extension_id in extension_ids)
+    return rf"^chrome-extension://(?:{escaped_ids})$"
+
+
+docs_enabled = parse_bool_env("ENABLE_API_DOCS", "true")
+
+
 app = FastAPI(
     title="TechPigeon MediaHub Extractor & Downloader API",
     version="2.0.0",
-    description="Enterprise-grade HD/4K video & audio parser. 99.99% uptime SLA. Supports 20+ platforms. Handles 10k+ concurrent connections."
+    description="Enterprise-grade HD/4K video & audio parser. 99.99% uptime SLA. Supports 20+ platforms. Handles 10k+ concurrent connections.",
+    docs_url="/docs" if docs_enabled else None,
+    redoc_url="/redoc" if docs_enabled else None,
+    openapi_url="/openapi.json" if docs_enabled else None,
 )
 
 # Production middleware stack
@@ -188,13 +212,29 @@ cors_origins = parse_csv_env(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
-    allow_origin_regex=r"^chrome-extension://[a-z]{32}$",
+    allow_origin_regex=get_extension_origin_regex(),
     allow_credentials=parse_bool_env("CORS_ALLOW_CREDENTIALS", "false"),
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 app.state.limiter = limiter
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    response.headers.setdefault("Cache-Control", "no-store")
+
+    forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    if forwarded_proto == "https":
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+
+    return response
 
 
 @app.exception_handler(RateLimitExceeded)
@@ -275,7 +315,6 @@ def analyze_media(req: AnalyzeRequest):
                             "filesize_approx": f.get('filesize') or f.get('filesize_approx') or 0,
                             "has_video": vcodec != 'none',
                             "has_audio": acodec != 'none',
-                            "direct_url": f.get('url')
                         })
 
             # Sort highest resolution first
@@ -310,8 +349,9 @@ def download_stream(
 ):
     """Streams media as attachment by default, with optional direct redirect mode."""
     target_url = validate_media_url(url)
+    selected_format_id = validate_format_id(format_id)
     opts = get_ytdl_options()
-    opts['format'] = format_id
+    opts['format'] = selected_format_id
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(target_url, download=False)
