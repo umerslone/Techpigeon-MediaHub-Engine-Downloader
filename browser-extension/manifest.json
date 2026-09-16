@@ -1,0 +1,43 @@
+{
+  "manifest_version": 3,
+  "name": "PWA 4K/HD Video Extractor Companion",
+  "version": "1.0",
+  "description": "Instant high quality video & audio downloder button on Bilibili, YouTube, OK.ru & all web players.",
+  "permissions": ["activeTab", "scripting", "storage", "downloads"],
+  "host_permissions": [
+    "*://*.youtube.com/*",
+    "*://youtu.be/*",
+    "*://*.bilibili.com/*",
+    "*://ok.ru/*",
+    "*://*.ok.ru/*",
+    "*://*.dailymotion.com/*",
+    "*://*.vimeo.com/*",
+    "*://*.tiktok.com/*",
+    "http://localhost:8000/*",
+    "http://127.0.0.1:8000/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": "icon.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.youtube.com/*",
+        "*://youtu.be/*",
+        "*://*.bilibili.com/*",
+        "*://ok.ru/*",
+        "*://*.ok.ru/*",
+        "*://*.dailymotion.com/*",
+        "*://*.vimeo.com/*",
+        "*://*.tiktok.com/*"
+      ],
+      "js": ["content.js"],
+      "css": ["styles.css"],
+      "run_at": "document_end"
+    }
+  ],
+  "icons": {
+    "128": "icon.png"
+  }
+}
