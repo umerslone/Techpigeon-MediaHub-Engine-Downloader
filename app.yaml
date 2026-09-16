@@ -1,55 +1,56 @@
 name: mediahub
 services:
-- name: frontend
-  github:
-    branch: main
-    deploy_on_push: true
-    repo: umerslone/Techpigeon-MediaHub-Engine-Downloader
-  build_command: npm install && npm run build
-  source_dir: pwa-frontend
-  http_port: 3000
-  envs:
-  - key: NEXT_PUBLIC_API_URL
-    value: ${api.PUBLIC_URL}
-  - key: NODE_ENV
-    value: production
+  - name: frontend
+    github:
+      branch: main
+      deploy_on_push: true
+      repo: umerslone/Techpigeon-MediaHub-Engine-Downloader
+    source_dir: pwa-frontend
+    build_command: npm ci && npm run build
+    run_command: npm start
+    http_port: 3000
+    envs:
+      - key: NEXT_PUBLIC_API_URL
+        value: ${api.PUBLIC_URL}
+      - key: NODE_ENV
+        value: production
 
-- name: api
-  github:
-    branch: main
-    deploy_on_push: true
-    repo: umerslone/Techpigeon-MediaHub-Engine-Downloader
-  build_command: pip install -r requirements.txt
-  dockerfile_path: Dockerfile
-  source_dir: backend
-  http_port: 8000
-  envs:
-  - key: REDIS_HOST
-    value: ${redis.HOSTNAME}
-  - key: REDIS_PORT
-    value: "6379"
-  - key: CACHE_TTL
-    value: "3600"
-  - key: MAX_CACHE_SIZE
-    value: "5000"
-  - key: ANALYSIS_TIMEOUT
-    value: "60"
-  - key: MAX_RETRIES
-    value: "3"
-  - key: REQUEST_TIMEOUT
-    value: "30"
-  - key: PROMETHEUS_ENABLED
-    value: "true"
+  - name: api
+    github:
+      branch: main
+      deploy_on_push: true
+      repo: umerslone/Techpigeon-MediaHub-Engine-Downloader
+    source_dir: backend
+    dockerfile_path: Dockerfile
+    http_port: 8000
+    envs:
+      - key: REDIS_HOST
+        value: ${redis.HOSTNAME}
+      - key: REDIS_PORT
+        value: "6379"
+      - key: CACHE_TTL
+        value: "3600"
+      - key: MAX_CACHE_SIZE
+        value: "5000"
+      - key: ANALYSIS_TIMEOUT
+        value: "60"
+      - key: MAX_RETRIES
+        value: "3"
+      - key: REQUEST_TIMEOUT
+        value: "30"
+      - key: PROMETHEUS_ENABLED
+        value: "true"
 
 databases:
-- name: redis
-  engine: REDIS
-  version: "7"
-  production: true
+  - name: redis
+    engine: REDIS
+    version: "7"
+    production: true
 
 static_sites:
-- name: browser-extension
-  source_dir: browser-extension
-  routes:
-  - path: /extension
-    destination_type: SPA
+  - name: browser-extension
+    source_dir: browser-extension
+    github:
+      branch: main
+      deploy_on_push: true
+      repo: umerslone/Techpigeon-MediaHub-Engine-Downloader
