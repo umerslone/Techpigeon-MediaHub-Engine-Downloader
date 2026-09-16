@@ -1,0 +1,179 @@
+name: CI/CD Deploy to Digital Ocean
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME_BACKEND: ${{ github.repository }}/backend
+  IMAGE_NAME_FRONTEND: ${{ github.repository }}/frontend
+
+jobs:
+  # ============ FRONTEND TESTS ============
+  test-frontend:
+    runs-on: ubuntu-latest
+    name: Test Frontend
+    defaults:
+      run:
+        working-directory: pwa-frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: pwa-frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run linter
+        run: npm run lint || true
+
+      - name: Build
+        run: npm run build
+
+      - name: Check build artifacts
+        run: |
+          if [ ! -d ".next" ]; then
+            echo "Build failed: .next directory not found"
+            exit 1
+          fi
+
+  # ============ BACKEND TESTS ============
+  test-backend:
+    runs-on: ubuntu-latest
+    name: Test Backend
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Lint with flake8
+        run: |
+          pip install flake8
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics || true
+
+      - name: Check imports
+        run: python -c "from main import app; print('✓ FastAPI app imports successfully')"
+
+  # ============ BUILD & PUSH IMAGES ============
+  build-and-push:
+    needs: [test-frontend, test-backend]
+    runs-on: ubuntu-latest
+    name: Build & Push Docker Images
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Build Backend
+      - name: Build and push backend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          push: ${{ github.ref == 'refs/heads/main' }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_BACKEND }}:latest,${{ env.REGISTRY }}/${{ env.IMAGE_NAME_BACKEND }}:${{ github.sha }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME_BACKEND }}:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME_BACKEND }}:buildcache,mode=max
+
+      # Build Frontend
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./pwa-frontend
+          push: ${{ github.ref == 'refs/heads/main' }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_FRONTEND }}:latest,${{ env.REGISTRY }}/${{ env.IMAGE_NAME_FRONTEND }}:${{ github.sha }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME_FRONTEND }}:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME_FRONTEND }}:buildcache,mode=max
+          build-args: |
+            NEXT_PUBLIC_API_URL=https://your-do-app.ondigitalocean.app
+
+  # ============ DEPLOY TO DIGITAL OCEAN ============
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    name: Deploy to Digital Ocean App Platform
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - name: Deploy to Digital Ocean App Platform
+        run: |
+          doctl apps create-deployment ${{ secrets.DIGITALOCEAN_APP_ID }} \
+            --source-dir . \
+            --format json \
+            --no-header
+
+      - name: Wait for deployment
+        run: |
+          DEPLOYMENT_ID=$(doctl apps get ${{ secrets.DIGITALOCEAN_APP_ID }} --format last_deployment_id --no-header)
+          echo "Waiting for deployment $DEPLOYMENT_ID..."
+          
+          max_attempts=60
+          attempt=0
+          while [ $attempt -lt $max_attempts ]; do
+            STATUS=$(doctl apps get-deployment ${{ secrets.DIGITALOCEAN_APP_ID }} $DEPLOYMENT_ID --format status --no-header)
+            echo "Deployment status: $STATUS"
+            
+            if [ "$STATUS" = "ACTIVE" ]; then
+              echo "✓ Deployment successful!"
+              exit 0
+            elif [ "$STATUS" = "ERROR" ]; then
+              echo "✗ Deployment failed!"
+              exit 1
+            fi
+            
+            sleep 10
+            attempt=$((attempt + 1))
+          done
+          
+          echo "✗ Deployment timeout"
+          exit 1
+
+      - name: Notify deployment success
+        if: success()
+        run: |
+          echo "✓ App deployed successfully!"
+          echo "Visit: https://${{ secrets.DIGITALOCEAN_APP_DOMAIN }}"
+
+      - name: Notify deployment failure
+        if: failure()
+        run: |
+          echo "✗ Deployment failed. Check logs above."
+          exit 1

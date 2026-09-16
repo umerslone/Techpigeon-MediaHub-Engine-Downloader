@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body {
+      width: 320px;
+      margin: 0;
+      padding: 14px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background-color: #0f172a;
+      color: #f8fafc;
+    }
+    .header {
+      font-size: 14px;
+      font-weight: 700;
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: #38bdf8;
+    }
+    .status {
+      font-size: 12px;
+      color: #94a3b8;
+      margin-bottom: 12px;
+    }
+    .card {
+      background: #1e293b;
+      padding: 10px;
+      border-radius: 10px;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border: 1px solid #334155;
+    }
+    .quality {
+      font-size: 13px;
+      font-weight: 600;
+      color: #fff;
+    }
+    .badge {
+      font-size: 10px;
+      background: #0284c7;
+      color: #fff;
+      padding: 2px 6px;
+      border-radius: 4px;
+      margin-left: 6px;
+    }
+    .btn {
+      background: #2563eb;
+      color: white;
+      border: none;
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      text-decoration: none;
+    }
+    .btn:hover { background: #1d4ed8; }
+    .loader {
+      text-align: center;
+      padding: 20px;
+      color: #94a3b8;
+      font-size: 12px;
+    }
+    .settings {
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid #334155;
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+    .settings input {
+      flex: 1;
+      background: #0b1220;
+      border: 1px solid #334155;
+      color: #f8fafc;
+      border-radius: 6px;
+      padding: 6px 8px;
+      font-size: 11px;
+    }
+    .settings button {
+      background: #0ea5e9;
+      color: #fff;
+      border: 0;
+      border-radius: 6px;
+      padding: 6px 8px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <span>⚡ Media Downloader</span>
+  </div>
+  <div id="status" class="status">Analyzing current tab URL...</div>
+  <div id="results">
+    <div class="loader">Scanning active player...</div>
+  </div>
+  <div class="settings">
+    <input id="apiBase" type="url" placeholder="Backend API URL" />
+    <button id="saveApiBase" type="button">Save</button>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
