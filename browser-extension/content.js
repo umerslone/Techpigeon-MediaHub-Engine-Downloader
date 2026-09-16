@@ -16,7 +16,7 @@ function sanitizeApiBase(value) {
 
     if (!isLocalHttp && !isRemoteHttps) return DEFAULT_API_BASE;
 
-    return `${parsed.protocol}//${parsed.host}${parsed.pathname}`.replace(/\/+$/, "");
+    return `${parsed.protocol}//${parsed.host}${parsed.pathname}${parsed.search}`.replace(/\/+$/, "");
   } catch (err) {
     return DEFAULT_API_BASE;
   }

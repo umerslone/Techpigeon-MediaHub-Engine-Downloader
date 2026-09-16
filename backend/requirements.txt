@@ -5,7 +5,7 @@ pydantic==2.6.4
 pydantic-settings==2.1.0
 
 # Video Processing
-yt-dlp>=2024.03.10
+yt-dlp==2026.8.19
 requests==2.31.0
 
 # Caching & Session Store
