@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "MediaHub - Video Downloader",
-  description: "Professional video downloading and processing platform",
+  title: "MediaHub — Engine Downloader",
+  description: "Extract video and audio in the quality and format you choose.",
 };
 
 export default function RootLayout({

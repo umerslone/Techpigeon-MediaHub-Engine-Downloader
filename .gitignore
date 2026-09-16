@@ -45,6 +45,7 @@ build/
 # IDE
 .vscode/
 .idea/
+.impeccable/
 *.swp
 *.swo
 *~
