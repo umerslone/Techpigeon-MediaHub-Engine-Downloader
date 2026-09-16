@@ -1,4 +1,8 @@
+FROM denoland/deno:bin-2.5.2 AS deno
+
 FROM python:3.11-slim
+
+COPY --from=deno /deno /usr/local/bin/deno
 
 # Install system dependencies, curl, and FFmpeg for video audio merging
 RUN apt-get update && apt-get install -y \

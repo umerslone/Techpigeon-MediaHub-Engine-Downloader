@@ -221,6 +221,7 @@ def get_ytdl_options():
     return {
         'quiet': True,
         'no_warnings': True,
+        'socket_timeout': REQUEST_TIMEOUT,
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         'http_headers': {
             'Referer': 'https://www.bilibili.com/',
@@ -298,9 +299,18 @@ def analyze_media(req: AnalyzeRequest):
             }
     except HTTPException:
         raise
-    except Exception:
+    except Exception as exc:
         logger.exception("Media analysis failed")
-        raise HTTPException(status_code=500, detail="Extraction failed")
+        detail = str(exc).lower()
+        if "sign in" in detail or "bot" in detail or "cookies" in detail:
+            raise HTTPException(
+                status_code=422,
+                detail="The video platform requires verification for this link. Try another public video.",
+            )
+        raise HTTPException(
+            status_code=502,
+            detail="The video platform could not provide media details. Try again or use another public link.",
+        )
 
 @app.get("/api/download-stream")
 def download_stream(
