@@ -1,5 +1,9 @@
 const DEFAULT_API_BASE = "http://localhost:8000";
 
+function isAllowedRemoteApi(hostname) {
+  return hostname === "ondigitalocean.app" || hostname.endsWith(".ondigitalocean.app");
+}
+
 function sanitizeApiBase(value) {
   if (!value || typeof value !== "string") return DEFAULT_API_BASE;
   try {
@@ -7,7 +11,8 @@ function sanitizeApiBase(value) {
     const isLocalHttp =
       parsed.protocol === "http:" &&
       (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1");
-    const isRemoteHttps = parsed.protocol === "https:";
+    const isRemoteHttps =
+      parsed.protocol === "https:" && isAllowedRemoteApi(parsed.hostname);
 
     if (!isLocalHttp && !isRemoteHttps) return DEFAULT_API_BASE;
 

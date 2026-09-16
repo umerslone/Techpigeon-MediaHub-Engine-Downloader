@@ -197,6 +197,16 @@ def get_extension_origin_regex() -> str:
     return rf"^chrome-extension://(?:{escaped_ids})$"
 
 
+def should_set_hsts(request: Request) -> bool:
+    if request.url.scheme == "https":
+        return True
+
+    if parse_bool_env("TRUST_PROXY_HEADERS", "false"):
+        return request.headers.get("x-forwarded-proto") == "https"
+
+    return False
+
+
 # ============================================================================
 # YT-DLP CONFIGURATION (Optimized for high-volume)
 # ============================================================================
@@ -265,8 +275,7 @@ async def add_security_headers(request: Request, call_next):
     response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
     response.headers.setdefault("Cache-Control", "no-store")
 
-    forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme)
-    if forwarded_proto == "https":
+    if should_set_hsts(request):
         response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 
     return response
