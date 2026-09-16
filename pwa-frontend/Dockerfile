@@ -7,7 +7,10 @@ WORKDIR /app
 COPY package*.json ./
 
 # Install dependencies
-RUN npm install
+RUN npm ci
+
+ARG NEXT_PUBLIC_API_URL
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 
 # Copy source
 COPY . .
@@ -19,9 +22,6 @@ RUN npm run build
 FROM node:20-alpine
 
 WORKDIR /app
-
-# Install dependencies needed for runtime
-RUN npm install -g next
 
 # Copy from builder
 COPY --from=builder /app/public ./public

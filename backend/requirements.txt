@@ -10,7 +10,7 @@ requests==2.31.0
 
 # Caching & Session Store
 redis==5.0.1
-hiredis==2.2.3
+hiredis==2.2.3; platform_system != "Windows"
 
 # Database
 sqlalchemy==2.0.25
@@ -24,8 +24,7 @@ kombu==5.3.4
 # Performance & Monitoring
 prometheus-client==0.19.0
 python-json-logger==2.0.7
-slow-log==1.0.2
-uvloop==0.19.0
+uvloop==0.19.0; platform_system != "Windows"
 
 # Compression & Optimization
 brotli==1.1.0
