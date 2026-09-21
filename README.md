@@ -96,7 +96,50 @@ Default download location:
 - `%TEMP%\techpigeon_downloads`
 - Example on Windows: `C:\Users\<you>\AppData\Local\Temp\techpigeon_downloads`
 
-## 4) Create Cloudflare Tunnel (Optional)
+## 4) Browser Extension User Guide
+
+The repository includes a companion extension in `browser-extension/`.
+
+Current extension capabilities:
+- Detects the active tab URL on supported media sites
+- Calls backend `POST /api/analyze` and shows top quality options
+- Starts downloads via backend `GET /api/download-stream`
+- Lets users set/save backend API base URL in popup settings
+
+Supported sites (as currently configured):
+- YouTube (`youtube.com`, `youtu.be`)
+- Bilibili
+- OK.ru
+- Dailymotion
+- Vimeo
+- TikTok
+
+### Install in Chrome / Edge (Developer Mode)
+
+1. Open extensions page:
+	- Chrome: `chrome://extensions`
+	- Edge: `edge://extensions`
+2. Enable `Developer mode`
+3. Click `Load unpacked`
+4. Select the `browser-extension/` folder
+5. Pin the extension to your toolbar (optional)
+
+### Use the extension
+
+1. Start backend first (`http://127.0.0.1:8000` recommended)
+2. Open a supported video page in browser
+3. Click extension icon
+4. Confirm/adjust `Backend API URL` in popup (default: `http://localhost:8000`)
+5. Click `Download` on the quality row you want
+
+### Extension notes
+
+- If popup shows analysis errors, first verify backend is running and healthy.
+- If you changed backend host/port, update the popup API base and retry.
+- The extension host permissions currently include localhost endpoints.
+- For non-localhost API domains, add that domain to `host_permissions` in `browser-extension/manifest.json`, then reload extension.
+
+## 5) Create Cloudflare Tunnel (Optional)
 
 Use this only if you want public temporary access to your local backend.
 
@@ -130,7 +173,7 @@ cd pwa-frontend
 npm run dev
 ```
 
-## 5) Troubleshooting
+## 6) Troubleshooting
 
 ### Frontend `EPERM ... .next\trace`
 
@@ -169,6 +212,28 @@ If the final repo URL is not yet configured/published, users can still:
 - Star/follow the creator profile: `https://github.com/umerslone`
 - Browse published repositories: `https://github.com/umerslone?tab=repositories`
 - Use "Find & Star Repo" in the app to locate the project on GitHub search
+
+## Open-Source Release Checklist
+
+Use this checklist before every public release:
+
+- Confirm working tree is clean: `git status`
+- Ensure no secrets or env files are tracked:
+	- `git ls-files *.env *.pem *.key`
+	- Scan source for high-risk patterns (tokens/keys/password literals)
+- Ensure generated artifacts are not tracked:
+	- No `.venv*`, `node_modules`, `.next`, `__pycache__`, `*.tsbuildinfo`
+- Verify cloud/deployment artifacts are not present (unless intentionally open-sourced)
+- Verify required governance docs exist and are updated:
+	- `README.md`, `LICENSE`, `SECURITY.md`, `CONTRIBUTING.md`
+- Run local smoke tests:
+	- Backend health endpoint responds
+	- Frontend loads and can analyze/download
+	- Browser extension popup can analyze current tab (if using extension)
+- Re-check remote refs:
+	- `git branch -r` only shows expected branches
+	- Remove stale refs/branches before release
+- Tag release only after checks pass and credentials are confirmed rotated if previously exposed
 
 ## License
 
