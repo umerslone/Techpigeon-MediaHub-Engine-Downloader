@@ -17,14 +17,45 @@ interface AnalyzeResponse {
   thumbnail: string;
   formats: Format[];
   audio_formats: Format[];
+  has_ffmpeg?: boolean;
+  ffmpeg_warning?: string;
+}
+
+interface DownloadResponse {
+  success: boolean;
+  title: string;
+  format: string;
+  format_id: string;
+  duration: number;
+  uploader: string;
+  filesize: number;
+  filepath: string;
+  message: string;
+  optimization?: {
+    avg_speed_mbps: number;
+    final_connections: number;
+    throttled: boolean;
+    retries_used: number;
+  };
 }
 
 export default function Home() {
+  const creatorUrl = process.env.NEXT_PUBLIC_CREATOR_URL || 'https://github.com/umerslone';
+  const repoUrlRaw = process.env.NEXT_PUBLIC_REPO_URL || '';
+  const repoUrl = repoUrlRaw.replace(/\.git\/?$/, '').replace(/\/$/, '');
+  const hasPublicRepoUrl = /^https:\/\/github\.com\/[^/]+\/[^/]+$/.test(repoUrl);
+  const repoStarsUrl = hasPublicRepoUrl
+    ? `${repoUrl}/stargazers`
+    : 'https://github.com/search?q=Techpigeon-MediaHub-Engine-Downloader&type=repositories';
+  const repoContributeUrl = hasPublicRepoUrl
+    ? `${repoUrl}/blob/main/CONTRIBUTING.md`
+    : 'https://github.com/umerslone?tab=repositories';
   const [url, setUrl] = useState('');
   const [loading, setLoading] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [warning, setWarning] = useState('');
   const [activeTab, setActiveTab] = useState<'video' | 'audio'>('video');
   const [formats, setFormats] = useState<Format[]>([]);
   const [selectedFormat, setSelectedFormat] = useState<string>('');
@@ -32,7 +63,20 @@ export default function Home() {
   const [progressStatus, setProgressStatus] = useState('');
   const [progressSpeed, setProgressSpeed] = useState('0B/s');
   const [progressEta, setProgressEta] = useState('--:--');
+  const [maxSpeedMbps, setMaxSpeedMbps] = useState<string>('0');
+  const [maxRetries, setMaxRetries] = useState<string>('3');
+  const [optimizationStats, setOptimizationStats] = useState<{avg_speed_mbps: number; final_connections: number; throttled: boolean; retries_used: number} | null>(null);
+  const [downloadDetails, setDownloadDetails] = useState<DownloadResponse | null>(null);
+  const [openingFolder, setOpeningFolder] = useState(false);
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+
+  const formatBytes = (bytes?: number) => {
+    if (!bytes || bytes <= 0) return 'Unknown';
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), sizes.length - 1);
+    const value = bytes / Math.pow(1024, i);
+    return `${value.toFixed(i === 0 ? 0 : 2)} ${sizes[i]}`;
+  };
 
   // Auto-analyze URL when it changes
   useEffect(() => {
@@ -46,6 +90,7 @@ export default function Home() {
 
   const handleAnalyze = async () => {
     setError('');
+    setWarning('');
     setAnalyzing(true);
     setFormats([]);
     setSelectedFormat('');
@@ -60,6 +105,12 @@ export default function Home() {
       if (!response.ok) throw new Error('Failed to analyze URL');
 
       const data: AnalyzeResponse = await response.json();
+      
+      // Show FFmpeg warning if present
+      if (data.ffmpeg_warning) {
+        setWarning(data.ffmpeg_warning);
+      }
+      
       const availableFormats = activeTab === 'video' ? data.formats : data.audio_formats;
       setFormats(availableFormats);
       if (availableFormats.length > 0) {
@@ -80,52 +131,93 @@ export default function Home() {
 
     setError('');
     setSuccess('');
+    setDownloadDetails(null);
     setProgress(0);
     setProgressStatus('starting');
     setLoading(true);
 
-    // Start listening to progress updates
+    let progressAbort = false;
+
+    // Start listening to progress updates FIRST
     const progressListener = async () => {
-      try {
-        const response = await fetch(`${apiUrl}/api/download-progress`);
-        if (!response.body) return;
+      let retries = 0;
+      const maxRetries = 10;
+      let lastProgress = 0;
+      
+      while (retries < maxRetries && !progressAbort) {
+        try {
+          const response = await fetch(`${apiUrl}/api/download-progress`, {
+            signal: AbortSignal.timeout(30000)
+          });
+          if (!response.body) {
+            retries++;
+            await new Promise(r => setTimeout(r, 100));
+            continue;
+          }
 
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          let consecutiveErrors = 0;
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
+          while (!progressAbort) {
+            try {
+              const { done, value } = await reader.read();
+              if (done) break;
 
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
+              buffer += decoder.decode(value, { stream: true });
+              const lines = buffer.split('\n');
+              buffer = lines.pop() || '';
 
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              try {
-                const data = JSON.parse(line.slice(6));
-                if (data.done) {
-                  setProgressStatus('finished');
-                  break;
+              for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                  try {
+                    const data = JSON.parse(line.slice(6));
+                    if (data.done) {
+                      progressAbort = true;
+                      break;
+                    }
+                    
+                    // Only update if progress actually changed or is a new status
+                    const newProgress = data.progress || 0;
+                    if (newProgress !== lastProgress || data.status === 'downloading') {
+                      lastProgress = newProgress;
+                      setProgress(newProgress);
+                      setProgressStatus(data.status || '');
+                      setProgressSpeed(data.speed || '0B/s');
+                      setProgressEta(data.eta || '--:--');
+                    }
+                    consecutiveErrors = 0;
+                  } catch (e) {
+                    consecutiveErrors++;
+                    if (consecutiveErrors > 5) {
+                      console.error('Too many parse errors, reconnecting:', e);
+                      throw e;
+                    }
+                  }
                 }
-                setProgress(data.progress || 0);
-                setProgressStatus(data.status || '');
-                setProgressSpeed(data.speed || '0B/s');
-                setProgressEta(data.eta || '--:--');
-              } catch (e) {
-                console.error('Failed to parse SSE data:', e);
               }
+            } catch (err) {
+              if (progressAbort) break;
+              throw err;
             }
           }
+          break;
+        } catch (err) {
+          if (progressAbort) break;
+          retries++;
+          if (retries < maxRetries) {
+            await new Promise(r => setTimeout(r, 200));
+          }
         }
-      } catch (err) {
-        console.error('Progress listener error:', err);
       }
     };
 
-    progressListener();
+    // Start progress listener and wait for it to be ready
+    const progressPromise = progressListener();
+
+    // Small delay to ensure listener is connected before starting download
+    await new Promise(r => setTimeout(r, 100));
 
     try {
       const response = await fetch(`${apiUrl}/api/download`, {
@@ -135,6 +227,8 @@ export default function Home() {
           url,
           format: activeTab,
           format_id: selectedFormat,
+          max_speed_bps: parseInt(maxSpeedMbps) > 0 ? parseInt(maxSpeedMbps) * 1024 * 1024 : 0,
+          max_retries: parseInt(maxRetries) || 3,
         }),
       });
 
@@ -143,16 +237,48 @@ export default function Home() {
         throw new Error(errorData.detail || 'Download failed');
       }
 
-      const result = await response.json();
-      setSuccess(`✅ ${result.message}`);
+      const result: DownloadResponse = await response.json();
+      progressAbort = true;
+      await progressPromise;
+      
+      setOptimizationStats(result.optimization || null);
+      setDownloadDetails(result);
+      setSuccess(result.message || 'Download completed successfully!');
       setProgress(100);
+      setProgressSpeed(
+        typeof result.optimization?.avg_speed_mbps === 'number'
+          ? `${result.optimization.avg_speed_mbps.toFixed(2)} MB/s`
+          : '0B/s'
+      );
+      setProgressEta('Complete');
       setUrl('');
       setFormats([]);
     } catch (err) {
+      progressAbort = true;
       setError('❌ ' + (err instanceof Error ? err.message : 'Download failed'));
       setProgress(0);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleOpenDownloadFolder = async () => {
+    setError('');
+    setOpeningFolder(true);
+    try {
+      const response = await fetch(`${apiUrl}/api/open-download-folder`, {
+        method: 'POST',
+      });
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Failed to open download folder');
+      }
+      const data = await response.json();
+      setSuccess(data.message || 'Download folder opened');
+    } catch (err) {
+      setError('❌ ' + (err instanceof Error ? err.message : 'Failed to open download folder'));
+    } finally {
+      setOpeningFolder(false);
     }
   };
 
@@ -404,6 +530,124 @@ export default function Home() {
             </div>
           )}
 
+          {/* Advanced Settings */}
+          <div style={{ marginBottom: '24px', padding: '16px', backgroundColor: 'rgba(59, 130, 246, 0.1)', borderRadius: '8px', border: '1px solid rgba(59, 130, 246, 0.2)' }}>
+            <p style={{ fontSize: '12px', fontWeight: '600', color: 'rgb(147, 197, 253)', margin: '0 0 12px 0' }}>
+              ⚙️ Optimization Settings
+            </p>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+              {/* Speed Limit */}
+              <div>
+                <label style={{
+                  display: 'block',
+                  fontSize: '12px',
+                  fontWeight: '600',
+                  color: 'rgb(191, 219, 254)',
+                  marginBottom: '6px',
+                }}>
+                  Max Speed (MB/s)
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={maxSpeedMbps}
+                  onChange={(e) => setMaxSpeedMbps(e.target.value)}
+                  disabled={loading}
+                  placeholder="0 (unlimited)"
+                  style={{
+                    width: '100%',
+                    padding: '8px 12px',
+                    backgroundColor: 'rgb(30, 41, 59)',
+                    border: '1px solid rgba(59, 130, 246, 0.3)',
+                    borderRadius: '6px',
+                    color: 'white',
+                    fontSize: '14px',
+                    boxSizing: 'border-box',
+                    opacity: loading ? 0.6 : 1,
+                  }}
+                />
+              </div>
+
+              {/* Max Retries */}
+              <div>
+                <label style={{
+                  display: 'block',
+                  fontSize: '12px',
+                  fontWeight: '600',
+                  color: 'rgb(191, 219, 254)',
+                  marginBottom: '6px',
+                }}>
+                  Max Retries
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  max="10"
+                  value={maxRetries}
+                  onChange={(e) => setMaxRetries(e.target.value)}
+                  disabled={loading}
+                  style={{
+                    width: '100%',
+                    padding: '8px 12px',
+                    backgroundColor: 'rgb(30, 41, 59)',
+                    border: '1px solid rgba(59, 130, 246, 0.3)',
+                    borderRadius: '6px',
+                    color: 'white',
+                    fontSize: '14px',
+                    boxSizing: 'border-box',
+                    opacity: loading ? 0.6 : 1,
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Optimization Statistics */}
+          {optimizationStats && !loading && (
+            <div style={{ marginBottom: '24px', padding: '16px', backgroundColor: 'rgba(34, 211, 238, 0.1)', borderRadius: '8px', border: '1px solid rgba(34, 211, 238, 0.3)' }}>
+              <p style={{ fontSize: '12px', fontWeight: '600', color: 'rgb(34, 211, 238)', margin: '0 0 12px 0' }}>
+                📊 Optimization Results
+              </p>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', fontSize: '12px', color: 'rgb(191, 219, 254)' }}>
+                <div>Avg Speed: <strong>{optimizationStats.avg_speed_mbps.toFixed(2)} MB/s</strong></div>
+                <div>Connections: <strong>{optimizationStats.final_connections}</strong></div>
+                <div>Throttled: <strong>{optimizationStats.throttled ? '✅ Yes' : '⊘ No'}</strong></div>
+                <div>Retries Used: <strong>{optimizationStats.retries_used}</strong></div>
+              </div>
+            </div>
+          )}
+
+          {downloadDetails && !loading && (
+            <div style={{ marginBottom: '24px', padding: '16px', backgroundColor: 'rgba(16, 185, 129, 0.12)', borderRadius: '8px', border: '1px solid rgba(16, 185, 129, 0.35)' }}>
+              <p style={{ fontSize: '12px', fontWeight: '600', color: 'rgb(110, 231, 183)', margin: '0 0 12px 0' }}>
+                📁 Download Details
+              </p>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', fontSize: '12px', color: 'rgb(191, 219, 254)', marginBottom: '12px' }}>
+                <div>Title: <strong>{downloadDetails.title}</strong></div>
+                <div>Size: <strong>{formatBytes(downloadDetails.filesize)}</strong></div>
+                <div>Format: <strong>{downloadDetails.format.toUpperCase()}</strong></div>
+                <div>Path: <strong>{downloadDetails.filepath}</strong></div>
+              </div>
+              <button
+                onClick={handleOpenDownloadFolder}
+                disabled={openingFolder}
+                style={{
+                  padding: '10px 14px',
+                  borderRadius: '8px',
+                  border: '1px solid rgba(16, 185, 129, 0.45)',
+                  background: openingFolder ? 'rgb(55, 65, 81)' : 'linear-gradient(to right, rgb(16, 185, 129), rgb(5, 150, 105))',
+                  color: 'white',
+                  fontWeight: 600,
+                  cursor: openingFolder ? 'not-allowed' : 'pointer',
+                  opacity: openingFolder ? 0.8 : 1,
+                }}
+              >
+                {openingFolder ? '⏳ Opening Folder...' : '📂 Open Download Folder'}
+              </button>
+            </div>
+          )}
+
           {/* Download Button */}
           <button
             onClick={handleDownload}
@@ -428,6 +672,23 @@ export default function Home() {
           </button>
 
           {/* Messages */}
+          {warning && (
+            <div style={{
+              marginTop: '16px',
+              padding: '16px',
+              backgroundColor: 'rgba(217, 119, 6, 0.2)',
+              border: '1px solid rgba(217, 119, 6, 0.5)',
+              borderRadius: '8px',
+              color: 'rgb(253, 224, 71)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '12px',
+            }}>
+              <span>⚠️</span>
+              <span>{warning}</span>
+            </div>
+          )}
+
           {error && (
             <div style={{
               marginTop: '16px',
@@ -493,6 +754,73 @@ export default function Home() {
               <p style={{ fontSize: '14px', color: 'rgb(147, 197, 253)' }}>{desc}</p>
             </div>
           ))}
+        </div>
+
+        {/* GitHub Star CTA */}
+        <div style={{
+          backgroundColor: 'rgba(15, 23, 42, 0.5)',
+          backdropFilter: 'blur(16px)',
+          border: '1px solid rgba(250, 204, 21, 0.4)',
+          borderRadius: '12px',
+          padding: '20px',
+          marginBottom: '2rem',
+          textAlign: 'center',
+        }}>
+          <p style={{ margin: '0 0 14px 0', color: 'rgb(254, 240, 138)', fontWeight: 700 }}>
+            ⭐ Enjoying this project? Send a star and contribute
+          </p>
+          <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', flexWrap: 'wrap' }}>
+            <a
+              href={repoStarsUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                padding: '10px 14px',
+                borderRadius: '8px',
+                background: 'linear-gradient(to right, rgb(250, 204, 21), rgb(234, 179, 8))',
+                color: 'rgb(15, 23, 42)',
+                fontWeight: 700,
+                textDecoration: 'none',
+              }}
+            >
+              {hasPublicRepoUrl ? '⭐ Star This Repo' : '⭐ Find & Star Repo'}
+            </a>
+            <a
+              href={creatorUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                padding: '10px 14px',
+                borderRadius: '8px',
+                border: '1px solid rgba(250, 204, 21, 0.55)',
+                color: 'rgb(254, 240, 138)',
+                fontWeight: 700,
+                textDecoration: 'none',
+              }}
+            >
+              👤 @umerslone Profile
+            </a>
+            <a
+              href={repoContributeUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                padding: '10px 14px',
+                borderRadius: '8px',
+                border: '1px solid rgba(56, 189, 248, 0.55)',
+                color: 'rgb(125, 211, 252)',
+                fontWeight: 700,
+                textDecoration: 'none',
+              }}
+            >
+              {hasPublicRepoUrl ? '🛠️ Contributing Guide' : '🗂️ Browse Repositories'}
+            </a>
+          </div>
+          {!hasPublicRepoUrl && (
+            <p style={{ margin: '12px 0 0 0', color: 'rgb(191, 219, 254)', fontSize: '12px' }}>
+              Tip: set NEXT_PUBLIC_REPO_URL in pwa-frontend/.env.local after publishing your repo.
+            </p>
+          )}
         </div>
 
         {/* Footer */}
