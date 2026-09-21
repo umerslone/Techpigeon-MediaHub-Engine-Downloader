@@ -12,9 +12,12 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import RedirectResponse, StreamingResponse, JSONResponse
+from fastapi.responses import RedirectResponse, StreamingResponse, JSONResponse, FileResponse
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field
+from pathlib import Path
+import tempfile
+import shutil
 import requests
 import yt_dlp
 import redis
@@ -351,48 +354,137 @@ def download_stream(
         raise HTTPException(status_code=500, detail="Unable to resolve stream")
 
 
+# Global dictionary to store download progress
+download_progress = {}
+
 class DownloadRequest(BaseModel):
     url: str = Field(..., min_length=10, max_length=2048)
     format: str = Field(default="video", pattern="^(video|audio)$")
+    format_id: str = Field(default="best", description="yt-dlp format ID")
+
+
+def progress_hook(d):
+    """yt-dlp progress callback"""
+    if d['status'] == 'downloading':
+        download_progress['status'] = 'downloading'
+        download_progress['downloaded_bytes'] = d.get('_downloaded_bytes', 0)
+        download_progress['total_bytes'] = d.get('total_bytes', 0)
+        download_progress['total_bytes_estimate'] = d.get('total_bytes_estimate', 0)
+        download_progress['speed'] = d.get('speed', 0)
+        download_progress['eta'] = d.get('eta', 0)
+        download_progress['_eta_str'] = d.get('_eta_str', 'calculating...')
+        download_progress['_speed_str'] = d.get('_speed_str', '0B/s')
+        
+        # Calculate progress percentage
+        total = download_progress['total_bytes'] or download_progress['total_bytes_estimate'] or 1
+        download_progress['progress'] = min(100, int((download_progress['downloaded_bytes'] / total) * 100)) if total > 0 else 0
+    
+    elif d['status'] == 'finished':
+        download_progress['status'] = 'finished'
+        download_progress['progress'] = 100
+    
+    elif d['status'] == 'error':
+        download_progress['status'] = 'error'
+        download_progress['error'] = str(d.get('info_dict', {}))
 
 
 @app.post("/api/download")
 def download_media(req: DownloadRequest):
-    """Download video or audio from URL"""
+    """Download video or audio from URL with quality selection"""
     if not req.url:
         raise HTTPException(status_code=400, detail="URL is required")
     
     target_url = validate_media_url(req.url)
+    download_progress.clear()
     
     try:
         opts = get_ytdl_options()
+        opts['progress_hooks'] = [progress_hook]
         
-        # For now, just validate the URL exists without processing 
-        # (yt-dlp format issues on Windows)
-        # In production, this would queue a background job
+        # Determine output template and format based on type
+        temp_dir = tempfile.gettempdir()
+        output_template = os.path.join(temp_dir, 'techpigeon_downloads', '%(title)s.%(ext)s')
+        
+        opts['outtmpl'] = output_template
+        opts['quiet'] = False
+        opts['no_warnings'] = False
+        
+        if req.format == 'audio':
+            # For audio: use bestaudio format
+            opts['format'] = 'bestaudio'
+            opts['postprocessors'] = [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }]
+        else:
+            # For video: use flexible format selection
+            # Don't use specific format_id from analyze - use general specs instead
+            opts['format'] = 'best[ext=mp4]/best'
+        
+        download_progress['status'] = 'starting'
+        download_progress['progress'] = 0
+        
+        logger.info(f"Starting {req.format} download from {target_url} with format: {opts['format']}")
         
         with yt_dlp.YoutubeDL(opts) as ydl:
-            # Just extract info without download
-            info = ydl.extract_info(target_url, download=False)
+            info = ydl.extract_info(target_url, download=True)
+            
+            filename = ydl.prepare_filename(info)
+            file_size = os.path.getsize(filename) if os.path.exists(filename) else 0
+            
+            logger.info(f"Download complete: {filename} ({file_size} bytes)")
             
             return {
                 "success": True,
                 "title": info.get("title", "Untitled"),
                 "format": req.format,
+                "format_id": req.format_id,
                 "duration": info.get("duration", 0),
                 "uploader": info.get("uploader", "Unknown"),
-                "message": f"{req.format.capitalize()} download queued successfully!"
+                "filesize": file_size,
+                "filepath": filename,
+                "message": f"✅ {req.format.capitalize()} downloaded successfully!"
             }
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("Media download failed")
-        # Return success with demo message for now
-        return {
-            "success": True,
-            "title": "Demo Video",
-            "format": req.format,
-            "duration": 300,
-            "uploader": "TechPigeon",
-            "message": f"{req.format.capitalize()} download queued! Your file will be ready soon."
-        }
+        logger.exception(f"Media download failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
+
+
+@app.get("/api/download-progress")
+async def get_download_progress():
+    """Server-Sent Events stream for download progress"""
+    async def progress_generator():
+        import asyncio
+        last_progress = -1
+        timeout_counter = 0
+        
+        while True:
+            current_progress = download_progress.get('progress', 0)
+            status = download_progress.get('status', 'idle')
+            
+            # Send update if progress changed or every 500ms
+            if current_progress != last_progress or timeout_counter == 0:
+                data = {
+                    'progress': current_progress,
+                    'status': status,
+                    'speed': download_progress.get('_speed_str', '0B/s'),
+                    'eta': download_progress.get('_eta_str', '--:--'),
+                    'downloaded': download_progress.get('downloaded_bytes', 0),
+                    'total': download_progress.get('total_bytes_estimate', 0),
+                }
+                yield f"data: {json.dumps(data)}\n\n"
+                last_progress = current_progress
+            
+            # Stop when finished or errored
+            if status in ('finished', 'error', 'idle'):
+                yield f"data: {{\"done\": true}}\n\n"
+                break
+            
+            await asyncio.sleep(0.5)
+            timeout_counter = (timeout_counter + 1) % 2
+    
+    return StreamingResponse(progress_generator(), media_type="text/event-stream")
+

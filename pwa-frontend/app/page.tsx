@@ -1,38 +1,156 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+
+interface Format {
+  format_id: string;
+  height?: number;
+  quality: string;
+  badge: string;
+  ext: string;
+  has_video: boolean;
+  has_audio: boolean;
+}
+
+interface AnalyzeResponse {
+  title: string;
+  thumbnail: string;
+  formats: Format[];
+  audio_formats: Format[];
+}
 
 export default function Home() {
   const [url, setUrl] = useState('');
   const [loading, setLoading] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [activeTab, setActiveTab] = useState<'video' | 'audio'>('video');
+  const [formats, setFormats] = useState<Format[]>([]);
+  const [selectedFormat, setSelectedFormat] = useState<string>('');
+  const [progress, setProgress] = useState(0);
+  const [progressStatus, setProgressStatus] = useState('');
+  const [progressSpeed, setProgressSpeed] = useState('0B/s');
+  const [progressEta, setProgressEta] = useState('--:--');
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
-  const handleDownload = async () => {
+  // Auto-analyze URL when it changes
+  useEffect(() => {
+    if (url.length > 10 && (url.startsWith('http://') || url.startsWith('https://'))) {
+      handleAnalyze();
+    } else {
+      setFormats([]);
+      setSelectedFormat('');
+    }
+  }, [url, activeTab]);
+
+  const handleAnalyze = async () => {
     setError('');
-    setSuccess('');
-    setLoading(true);
+    setAnalyzing(true);
+    setFormats([]);
+    setSelectedFormat('');
 
     try {
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-      
+      const response = await fetch(`${apiUrl}/api/analyze`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+      });
+
+      if (!response.ok) throw new Error('Failed to analyze URL');
+
+      const data: AnalyzeResponse = await response.json();
+      const availableFormats = activeTab === 'video' ? data.formats : data.audio_formats;
+      setFormats(availableFormats);
+      if (availableFormats.length > 0) {
+        setSelectedFormat(availableFormats[0].format_id);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to analyze URL');
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
+  const handleDownload = async () => {
+    if (!selectedFormat) {
+      setError('Please select a quality');
+      return;
+    }
+
+    setError('');
+    setSuccess('');
+    setProgress(0);
+    setProgressStatus('starting');
+    setLoading(true);
+
+    // Start listening to progress updates
+    const progressListener = async () => {
+      try {
+        const response = await fetch(`${apiUrl}/api/download-progress`);
+        if (!response.body) return;
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const data = JSON.parse(line.slice(6));
+                if (data.done) {
+                  setProgressStatus('finished');
+                  break;
+                }
+                setProgress(data.progress || 0);
+                setProgressStatus(data.status || '');
+                setProgressSpeed(data.speed || '0B/s');
+                setProgressEta(data.eta || '--:--');
+              } catch (e) {
+                console.error('Failed to parse SSE data:', e);
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Progress listener error:', err);
+      }
+    };
+
+    progressListener();
+
+    try {
       const response = await fetch(`${apiUrl}/api/download`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ url, format: activeTab }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url,
+          format: activeTab,
+          format_id: selectedFormat,
+        }),
       });
 
       if (!response.ok) {
-        throw new Error('Download failed');
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Download failed');
       }
 
-      setSuccess(`${activeTab === 'video' ? 'Video' : 'Audio'} downloaded successfully!`);
+      const result = await response.json();
+      setSuccess(`✅ ${result.message}`);
+      setProgress(100);
       setUrl('');
+      setFormats([]);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError('❌ ' + (err instanceof Error ? err.message : 'Download failed'));
+      setProgress(0);
     } finally {
       setLoading(false);
     }
@@ -127,10 +245,15 @@ export default function Home() {
         }}>
           {/* Tabs */}
           <div style={{ display: 'flex', gap: '8px', marginBottom: '32px' }}>
-            {['video', 'audio'].map((tab) => (
+            {(['video', 'audio'] as const).map((tab) => (
               <button
                 key={tab}
-                onClick={() => setActiveTab(tab as 'video' | 'audio')}
+                onClick={() => {
+                  setActiveTab(tab);
+                  setFormats([]);
+                  setSelectedFormat('');
+                  setError('');
+                }}
                 style={{
                   flex: 1,
                   padding: '12px 24px',
@@ -140,7 +263,7 @@ export default function Home() {
                   cursor: 'pointer',
                   fontSize: '16px',
                   transition: 'all 0.2s',
-                  backgroundColor: activeTab === tab
+                  background: activeTab === tab
                     ? 'linear-gradient(to right, rgb(34, 211, 238), rgb(37, 99, 235))'
                     : 'rgb(30, 41, 59)',
                   color: activeTab === tab ? 'white' : 'rgb(147, 197, 253)',
@@ -160,13 +283,14 @@ export default function Home() {
               color: 'rgb(191, 219, 254)',
               marginBottom: '12px',
             }}>
-              Video URL
+              Video URL (YouTube, TikTok, Instagram, Twitter, etc.)
             </label>
             <input
               type="url"
               placeholder="https://example.com/video"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
+              disabled={loading}
               style={{
                 width: '100%',
                 padding: '12px 16px',
@@ -178,10 +302,13 @@ export default function Home() {
                 boxSizing: 'border-box',
                 transition: 'all 0.2s',
                 outline: 'none',
+                opacity: loading ? 0.6 : 1,
               }}
               onFocus={(e) => {
-                e.currentTarget.style.borderColor = 'rgb(34, 211, 238)';
-                e.currentTarget.style.boxShadow = '0 0 0 3px rgba(34, 211, 238, 0.1)';
+                if (!loading) {
+                  e.currentTarget.style.borderColor = 'rgb(34, 211, 238)';
+                  e.currentTarget.style.boxShadow = '0 0 0 3px rgba(34, 211, 238, 0.1)';
+                }
               }}
               onBlur={(e) => {
                 e.currentTarget.style.borderColor = 'rgba(59, 130, 246, 0.3)';
@@ -190,10 +317,97 @@ export default function Home() {
             />
           </div>
 
+          {/* Quality Selection */}
+          {formats.length > 0 && (
+            <div style={{ marginBottom: '24px' }}>
+              <label style={{
+                display: 'block',
+                fontSize: '14px',
+                fontWeight: '600',
+                color: 'rgb(191, 219, 254)',
+                marginBottom: '12px',
+              }}>
+                📊 Select Quality
+              </label>
+              <select
+                value={selectedFormat}
+                onChange={(e) => setSelectedFormat(e.target.value)}
+                disabled={loading || analyzing}
+                style={{
+                  width: '100%',
+                  padding: '12px 16px',
+                  backgroundColor: 'rgb(30, 41, 59)',
+                  border: '1px solid rgba(59, 130, 246, 0.3)',
+                  borderRadius: '8px',
+                  color: 'white',
+                  fontSize: '16px',
+                  boxSizing: 'border-box',
+                  cursor: loading ? 'not-allowed' : 'pointer',
+                  opacity: loading ? 0.6 : 1,
+                }}
+              >
+                {formats.map((fmt) => (
+                  <option key={fmt.format_id} value={fmt.format_id}>
+                    {fmt.quality} {fmt.badge ? `[${fmt.badge}]` : ''} • {fmt.ext.toUpperCase()}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {/* Analyzing Indicator */}
+          {analyzing && (
+            <div style={{
+              marginBottom: '24px',
+              padding: '12px 16px',
+              backgroundColor: 'rgba(34, 211, 238, 0.1)',
+              border: '1px solid rgb(34, 211, 238)',
+              borderRadius: '8px',
+              color: 'rgb(34, 211, 238)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '12px',
+              fontSize: '14px',
+            }}>
+              <span>🔍 Analyzing formats...</span>
+            </div>
+          )}
+
+          {/* Progress Bar */}
+          {progress > 0 && (
+            <div style={{ marginBottom: '24px' }}>
+              <div style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                marginBottom: '8px',
+                fontSize: '12px',
+                color: 'rgb(191, 219, 254)',
+              }}>
+                <span>📥 Downloading: {Math.round(progress)}%</span>
+                <span>{progressSpeed} • ETA: {progressEta}</span>
+              </div>
+              <div style={{
+                width: '100%',
+                height: '8px',
+                backgroundColor: 'rgb(30, 41, 59)',
+                borderRadius: '4px',
+                overflow: 'hidden',
+                border: '1px solid rgba(59, 130, 246, 0.3)',
+              }}>
+                <div style={{
+                  height: '100%',
+                  width: `${progress}%`,
+                  background: 'linear-gradient(to right, rgb(34, 211, 238), rgb(37, 99, 235))',
+                  transition: 'width 0.3s ease',
+                }} />
+              </div>
+            </div>
+          )}
+
           {/* Download Button */}
           <button
             onClick={handleDownload}
-            disabled={loading || !url}
+            disabled={loading || !url || formats.length === 0 || analyzing}
             style={{
               width: '100%',
               padding: '12px',
@@ -201,16 +415,16 @@ export default function Home() {
               fontWeight: 'bold',
               fontSize: '16px',
               border: 'none',
-              cursor: loading || !url ? 'not-allowed' : 'pointer',
-              background: loading || !url
+              cursor: loading || !url || formats.length === 0 || analyzing ? 'not-allowed' : 'pointer',
+              background: loading || !url || formats.length === 0 || analyzing
                 ? 'rgb(55, 65, 81)'
                 : 'linear-gradient(to right, rgb(34, 211, 238), rgb(37, 99, 235))',
               color: 'white',
               transition: 'all 0.2s',
-              opacity: loading || !url ? 0.7 : 1,
+              opacity: loading || !url || formats.length === 0 || analyzing ? 0.7 : 1,
             }}
           >
-            {loading ? '⏳ Processing...' : '⬇️ Download Now'}
+            {loading ? `⏳ ${Math.round(progress)}% Downloading...` : '⬇️ Download Now'}
           </button>
 
           {/* Messages */}
